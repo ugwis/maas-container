@@ -93,8 +93,8 @@ jobs:
           push: false
           load: false
           outputs: type=digest
-          build-args:
-            - MAAS_VERSION=${{ matrix.version }}
+          build-args: |
+            MAAS_VERSION=${{ matrix.version }}
 
       - name: Push image if digest changed
         if: steps.get-remote-digest.outputs.existing_digest != steps.build.outputs.digest
@@ -107,8 +107,8 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/maas:${{ matrix.version }}
             ${{ (matrix.version == needs.generate-matrix.outputs.latest && format('{0}/maas:latest', steps.login-ecr.outputs.registry)) || '' }}
           provenance: false
-          build-args:
-            - MAAS_VERSION=${{ matrix.version }}
+          build-args: |
+            MAAS_VERSION=${{ matrix.version }}
 
       - name: Log skipped image push
         if: steps.get-remote-digest.outputs.existing_digest == steps.build.outputs.digest
