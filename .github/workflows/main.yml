@@ -1,4 +1,4 @@
-name: Build and Push MAAS Versions to ECR Public (Stable Tag Support)
+name: Build and Push MAAS Versions to ECR Public (Stable and Supported Versions)
 
 on:
   schedule:
@@ -12,11 +12,14 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       stable: ${{ steps.set-matrix.outputs.stable }}
     steps:
-      - name: Fetch active MAAS versions from Launchpad and find stable
+      - name: Fetch supported/stable MAAS versions from Launchpad and find stable
         id: set-matrix
         run: |
-          VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '.entries | map(select(.active)) | map(.name)')
-          STABLE_VERSION=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '.entries | map(select(.status == "Current Stable Release")) | .[0].name')
+          VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | \
+            jq -r '.entries | map(select(.status == "Current Stable Release" or .status == "Supported")) | map(.name)')
+
+          STABLE_VERSION=$(curl -s https://api.launchpad.net/devel/maas/series | \
+            jq -r '.entries | map(select(.status == "Current Stable Release")) | .[0].name')
 
           if [ -z "$STABLE_VERSION" ]; then
             echo "No stable version found!"
