@@ -72,7 +72,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           load: false
-          outputs: type=digest
+          provenance: false
           build-args: |
             MAAS_VERSION=${{ matrix.version }}
 
