@@ -1,0 +1,115 @@
+name: Build and Push MAAS Versions to ECR
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      latest: ${{ steps.set-matrix.outputs.latest }}
+    steps:
+      - name: Fetch MAAS versions from Launchpad and find latest
+        id: set-matrix
+        run: |
+          # Get versions as array
+          VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | \
+            jq -r '[.entries[].name]')
+
+          echo "Found versions: $VERSIONS"
+
+          # Find the latest version using sort -V (version sort)
+          LATEST_VERSION=$(echo "$VERSIONS" | jq -r '.[]' | sort -V | tail -n 1)
+
+          echo "Latest version is: $LATEST_VERSION"
+
+          MATRIX_JSON=$(echo "$VERSIONS" | jq -c '{version: .}')
+
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+          # デバッグ用
+          echo "$MATRIX_JSON"
+          echo "$LATEST_VERSION"
+
+  build-and-push:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Get existing ECR image digest
+        id: get-remote-digest
+        run: |
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/maas:${{ matrix.version }}"
+          echo "Checking digest for $IMAGE_URI"
+
+          IMAGE_INFO=$(aws ecr batch-get-image \
+            --repository-name maas \
+            --image-ids imageTag=${{ matrix.version }} \
+            --query 'images[0]' \
+            --output json)
+
+          if [ "$IMAGE_INFO" == "null" ]; then
+            echo "No existing image found for version ${{ matrix.version }}"
+            EXISTING_DIGEST="none"
+          else
+            EXISTING_DIGEST=$(echo "$IMAGE_INFO" | jq -r '.imageManifest' | jq -r 'fromjson | .config.digest')
+          fi
+
+          echo "existing_digest=$EXISTING_DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Build Docker Image (Multi-Arch) without push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          load: false
+          outputs: type=digest
+          build-args:
+            - MAAS_VERSION=${{ matrix.version }}
+
+      - name: Push image if digest changed
+        if: steps.get-remote-digest.outputs.existing_digest != steps.build.outputs.digest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/maas:${{ matrix.version }}
+            ${{ (matrix.version == needs.generate-matrix.outputs.latest && format('{0}/maas:latest', steps.login-ecr.outputs.registry)) || '' }}
+          provenance: false
+          build-args:
+            - MAAS_VERSION=${{ matrix.version }}
+
+      - name: Log skipped image push
+        if: steps.get-remote-digest.outputs.existing_digest == steps.build.outputs.digest
+        run: echo "No changes detected for MAAS version ${{ matrix.version }}. Skipping push."
