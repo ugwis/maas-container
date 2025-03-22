@@ -15,7 +15,7 @@ jobs:
       - name: Fetch MAAS versions from Launchpad and find latest
         id: set-matrix
         run: |
-          VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '[.entries[].name]')
+          VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '.entries | map(select(.active)) | map(.name)')
           LATEST_VERSION=$(echo "$VERSIONS" | jq -r '.[]' | sort -V | tail -n 1)
           MATRIX_JSON=$(echo "$VERSIONS" | jq -c '{version: .}')
           
