@@ -1,8 +1,8 @@
-name: Build and Push MAAS Versions to ECR Public (Active Series + Latest Image Tag)
+name: Build and Push MAAS Versions to ECR Public (Stable Tag Support)
 
 on:
   schedule:
-    - cron: '0 18 * * 0' # 毎週月曜 午前3時(JST)
+    - cron: '0 18 * * 0'
   workflow_dispatch:
 
 jobs:
@@ -10,27 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      latest: ${{ steps.set-matrix.outputs.latest }}
-
+      stable: ${{ steps.set-matrix.outputs.stable }}
     steps:
-      - name: Fetch active MAAS versions from Launchpad and find latest
+      - name: Fetch active MAAS versions from Launchpad and find stable
         id: set-matrix
         run: |
           VERSIONS=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '.entries | map(select(.active)) | map(.name)')
+          STABLE_VERSION=$(curl -s https://api.launchpad.net/devel/maas/series | jq -r '.entries | map(select(.status == "Current Stable Release")) | .[0].name')
 
-          echo "Active Versions found: $VERSIONS"
-
-          LATEST_VERSION=$(echo "$VERSIONS" | jq -r '.[]' | sort -V | tail -n 1)
-
-          echo "Latest Version is: $LATEST_VERSION"
+          if [ -z "$STABLE_VERSION" ]; then
+            echo "No stable version found!"
+            exit 1
+          fi
 
           MATRIX_JSON=$(echo "$VERSIONS" | jq -c '{version: .}')
 
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-          echo "latest=$LATEST_VERSION" >> $GITHUB_OUTPUT
-
-          echo "Matrix: $MATRIX_JSON"
-          echo "Latest Version: $LATEST_VERSION"
+          echo "stable=$STABLE_VERSION" >> $GITHUB_OUTPUT
 
   build-and-push:
     needs: generate-matrix
@@ -38,7 +34,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -56,7 +51,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1 # ECR Publicはus-east-1
+          aws-region: us-east-1
 
       - name: Login to Amazon ECR Public
         id: login-ecr-public
@@ -64,7 +59,6 @@ jobs:
           aws ecr-public get-login-password --region us-east-1 | \
             docker login --username AWS --password-stdin public.ecr.aws
 
-      # Get existing ECR Public image digest
       - name: Get existing ECR Public image digest
         id: get-remote-digest
         run: |
@@ -74,10 +68,8 @@ jobs:
             --region us-east-1 \
             --query 'imageDetails[0].imageDigest' \
             --output text || echo "none")
-
           echo "existing_digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
 
-      # Build the Docker image and output digest
       - name: Build Docker Image (Multi-Arch) without push
         id: build
         uses: docker/build-push-action@v5
@@ -90,7 +82,6 @@ jobs:
           build-args: |
             MAAS_VERSION=${{ matrix.version }}
 
-      # Push if digest changed
       - name: Push Docker Image to ECR Public (version tag)
         if: steps.get-remote-digest.outputs.existing_digest != steps.build.outputs.digest
         uses: docker/build-push-action@v5
@@ -99,21 +90,20 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            public.ecr.aws/w0f0c9a2/maas:${{ matrix.version }}
+            ${{ secrets.ECR_REPOSITORY }}:${{ matrix.version }}
           provenance: false
           build-args: |
             MAAS_VERSION=${{ matrix.version }}
 
-      # Push "latest" tag if this is the latest version
-      - name: Push Docker Image to ECR Public (latest tag)
-        if: matrix.version == needs.generate-matrix.outputs.latest
+      - name: Push Docker Image to ECR Public (stable tag)
+        if: matrix.version == needs.generate-matrix.outputs.stable
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            public.ecr.aws/w0f0c9a2/maas:latest
+            ${{ secrets.ECR_REPOSITORY }}:stable
           provenance: false
           build-args: |
             MAAS_VERSION=${{ matrix.version }}
